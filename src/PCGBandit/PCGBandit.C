@@ -49,6 +49,13 @@ namespace Foam
     labelField wordGAMGSizes(wordGAMGParams.size());
     labelField labelGAMGSizes(labelGAMGParams.size());
 
+    #ifdef PCGB_DEBUG
+    dictionary initialDiags;
+    dictionary previousDiags;
+    dictionary initialLowers;
+    dictionary previousLowers;
+    #endif
+
 }
 
 
@@ -434,6 +441,27 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
     const direction cmpt
 ) const
 {
+
+    #ifdef PCGB_DEBUG
+    if (initialDiags.found(banditName_)) {
+        Info<< "\tsquared Frobenius distance from initial diag: " << gSum(sqr(matrix_.diag() - initialDiags.get<scalarField>(banditName_))) << endl;
+        Info<< "\tsquared Frobenius distance from previous diag: " << gSum(sqr(matrix_.diag() - previousDiags.get<scalarField>(banditName_))) << endl;
+        previousDiags.set<scalarField>(banditName_, scalarField(matrix_.diag()));
+        Info<< "\tsquared Frobenius distance from initial lower: " << gSum(sqr(matrix_.lower() - initialLowers.get<scalarField>(banditName_))) << endl;
+        Info<< "\tsquared Frobenius distance from previous lower: " << gSum(sqr(matrix_.lower() - previousLowers.get<scalarField>(banditName_))) << endl;
+        previousLowers.set<scalarField>(banditName_, scalarField(matrix_.lower()));
+    } else {
+        scalarField initialDiag = scalarField(matrix_.diag());
+        Info<< "\tsquared Frobenius norm of initial diag: " << gSum(sqr(initialDiag)) << endl;
+        initialDiags.add<scalarField>(banditName_, initialDiag);
+        previousDiags.add<scalarField>(banditName_, initialDiag);
+        scalarField initialLower = scalarField(matrix_.lower());
+        Info<< "\tsquared Frobenius norm of initial lower: " << gSum(sqr(initialLower)) << endl;
+        initialLowers.add<scalarField>(banditName_, initialLower);
+        previousLowers.add<scalarField>(banditName_, initialLower);
+    }
+    #endif
+
     // --- Setup class containing solver performance data
     solverPerformance solverPerf
     (
