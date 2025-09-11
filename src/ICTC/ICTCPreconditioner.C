@@ -81,7 +81,8 @@ Foam::label Foam::ICTCPreconditioner::calcL
     labelField list_(n);
     label* __restrict__ list = list_.begin();
 
-    bool posdef = (diagA[0] > 0.0); // Assumes sign is determined by first diagonal entry
+    // --- Assumes sign is determined by first diagonal entry
+    bool posdef = (diagA[0] > 0.0);
     for (label i = 0; i < n; i++) {
         #ifdef ICTC_DEBUG
         if (posdef != (diagA[i] > 0.0) || diagA[i] == 0.0) {
@@ -98,26 +99,29 @@ Foam::label Foam::ICTCPreconditioner::calcL
     label ipos = 0;
     label jpos = 0;
 
-    // Loop over all columns
+    // --- Loop over all columns
     for (label k = 0; k < n; k++) {
 
-        // Load column k into ta
+        // --- Load column k into ta
         label talen = 0;
     
-        // Add diagonal element with scaling
+        // --- Add diagonal element with scaling
         diagL[k] += diagA[k] * signScale[k] * scale[k];
     
-        // Add off-diagonal elements with scaling
+        // --- Add off-diagonal elements with scaling
         while (jpos < nl && colAddrA[jpos] == k) {
             label row = rowAddrA[jpos];
             ta[row] = lowerA[jpos] * signScale[k] * scale[row];
             itcol[talen] = row;
             talen++;
-            ifirst[row] = 1;  // Mark that row has a nonzero value (this is just a flag, not linked list)
+
+            // --- Mark that row has a nonzero value (this is just a flag, not linked list)
+            ifirst[row] = 1;
             jpos++;
+
         }
     
-        // Update column k using the previous columns
+        // --- Update column k using the previous columns
         label j = list[k];
         while (j != -1) { 
             label isj = ifirst[j];
@@ -135,13 +139,13 @@ Foam::label Foam::ICTCPreconditioner::calcL
                 j = list[j];
             }   
     
-            // Apply pivot minimum value
+            // --- Apply pivot minimum value
             scalar temp = diagL[k];
             if (temp < pivmin) {
                 temp = pivmin;
             }   
     
-            // Apply drop tolerance (alpha = 0)
+            // --- Apply drop tolerance (alpha = 0)
             if (Foam::mag(lval / Foam::sqrt(temp)) <= droptol) {
                 continue;
             }   
@@ -151,15 +155,18 @@ Foam::label Foam::ICTCPreconditioner::calcL
                 if (ifirst[row] != -1) { 
                     ta[row] = ta[row] - lval * lowerL[i];
                 } else {
-                    ifirst[row] = 1;  // This is a flag, not part of linked list
+
+                    // --- This is a flag, not part of linked list
+                    ifirst[row] = 1;
                     itcol[talen] = row;
                     talen++;
                     ta[row] = - lval * lowerL[i];
+
                 }   
             }   
         }   
     
-        // Drop using droptol
+        // --- Drop using droptol
         if (droptol > 0.0) {
             j = 0;
             for (label i = 0; i < talen; i++) {
@@ -174,9 +181,10 @@ Foam::label Foam::ICTCPreconditioner::calcL
             talen = j;
         }   
     
-        // Sort row indices in ascending order 
+        // --- Sort row indices in ascending order 
         // std::sort(itcol.begin(), itcol.begin() + talen);
-        // small arrays so insertion sort is faster than std::sort
+
+        // --- Arrays are small so insertion sort is faster than std::sort
         for (label i = 1; i < talen; i++) {
             label j;
             label key = itcol[i];
@@ -186,7 +194,7 @@ Foam::label Foam::ICTCPreconditioner::calcL
             itcol[j] = key;
         }
     
-        // Now we can do sqrt
+        // --- Now we can do sqrt
         if (diagL[k] < pivmin) {
             diagL[k] = pivmin;
         }
@@ -195,25 +203,25 @@ Foam::label Foam::ICTCPreconditioner::calcL
             FatalErrorIn("Foam::ICTCPreconditioner::calcL") << "zero or negative pivot encountered in column " << k+1 << exit(FatalError);
         }
         #endif
-        // diagL[k] = Foam::sqrt(diagL[k]);
-        diagL[k] = 1.0 / Foam::sqrt(diagL[k]); // store reciprocal instead
+
+        // --- Store reciprocal
+        diagL[k] = 1.0 / Foam::sqrt(diagL[k]);
     
-        // Scale and update remaining diagonals using nondropped elements only
+        // --- Scale and update remaining diagonals using nondropped elements only
         for (label j = 0; j < talen; j++) {
             label row = itcol[j];
-            // ta[row] /= diagL[k];
-            ta[row] *= diagL[k]; // because we are storing reciprocal
-            diagL[row] -= ta[row] * ta[row]; // valid because row > k
+            ta[row] *= diagL[k];
+            diagL[row] -= ta[row] * ta[row];
         }   
 
         #ifdef ICTC_DEBUG
-        // Check that we have enough storage
+        // --- Check that we have enough storage
         if (ipos + talen > lowerL_.size()) {
             FatalErrorIn("Foam::ICTCPreconditioner::calcL") << "insufficient storage for factor at column " << k+1 << exit(FatalError);
         }
         #endif
     
-        // Put the largest elements back into the sparse data structure
+        // --- Put the largest elements back into the sparse data structure
         for (label icount = 0; icount < talen; icount++) {
             lowerL[ipos] = ta[itcol[icount]];
             rowAddrL[ipos] = itcol[icount];
@@ -221,7 +229,7 @@ Foam::label Foam::ICTCPreconditioner::calcL
         }   
         colPtrL[k+1] = ipos;
     
-        // ifirst and list keep track of where in column k we are
+        // --- Variables ifirst and list keep track of where in column k we are
         if (talen > 0) {
             label isk = colPtrL[k];
             label iptr = rowAddrL[isk];
@@ -230,17 +238,16 @@ Foam::label Foam::ICTCPreconditioner::calcL
             ifirst[k] = isk;
         }   
     
-        // Reset ifirst for next column
+        // --- Reset ifirst for next column
         for (label j = 0; j < talen; j++) {
             ifirst[itcol[j]] = -1; 
         }   
 
     }   
 
-    // Scale back the factor
+    // --- Scale back the factor
     for (label i = 0; i < n; i++) {
-        // diagL[i] /= signScale[i];
-        diagL[i] *= signScale[i]; // because we are storing reciprocal
+        diagL[i] *= signScale[i];
         for (label j = colPtrL[i]; j < colPtrL[i+1]; j++) {
             lowerL[j] /= signScale[rowAddrL[j]];
         }   
@@ -268,29 +275,27 @@ void Foam::ICTCPreconditioner::precondition
 
     const label n = wA.size();
 
-    // Copy rhs to sol
+    // --- Copy rhs to sol
     for (label i = 0; i < n; i++) {
         sol[i] = rhs[i];
     }
 
-    // Forward solve with L
+    // --- Forward solve with L
     for (label i = 0; i < n; i++) {
-        // sol[i] /= diagL[i];
-        sol[i] *= diagL[i]; // because we are storing reciprocal
+        sol[i] *= diagL[i];
         scalar s = sol[i];
         for (label k = colPtrL[i]; k < colPtrL[i+1]; k++) {
             sol[rowAddrL[k]] -= lowerL[k] * s;
         }
     }
 
-    // Backward solve with L^T
+    // --- Backward solve with L^T
     for (label i = n-1; i >= 0; i--) {
         scalar s = sol[i];
         for (label k = colPtrL[i]; k < colPtrL[i+1]; k++) {
             s -= lowerL[k] * sol[rowAddrL[k]];
         }
-        // sol[i] = s / diagL[i];
-        sol[i] = s * diagL[i]; // because we are storing reciprocal
+        sol[i] = s * diagL[i];
     }
 
 }
