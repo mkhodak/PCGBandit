@@ -26,7 +26,7 @@ if [ -z $NAME ] ; then
     NPROC=1  
   fi
   SEED=0
-  DEBUG=True
+  #DEBUG=True
 fi
 rm -rf $NAME/$NPROC/$SEED
 mkdir -p $NAME/$NPROC/$SEED

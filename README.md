@@ -24,9 +24,11 @@ The first argument to the script specifies the simulation while the second speci
 Below are some example commands (only these cases are currently implemented in `run.sh`).
 The last two assume the [FreeMHD solver](https://github.com/PlasmaControl/FreeMHD/tree/main/MHD_Solvers/solvers/epotMultiRegionInterFoam) `epotMultiRegionInterFoam` has been compiled.
 ```
-sh run.sh pitzDaily           # OpenFOAM tutorial incompressible/pimpleFoam/RAS/pitzDaily
-sh run.sh interStefanProblem  # OpenFOAM tutorial verificationAndValidation/multiphase/StefanProblem
-sh run.sh closedPipe          # FreeMHD case file
+sh run.sh boxTurb32           # OpenFOAM tutorial DNS/dnsFoam/boxTurb16 (at 2x resolution)
+sh run.sh pitzDaily           # OpenFOAM tutorial incompressible/pimpleFoam/RAS/pitzDaily (at 2x resolution)
+sh run.sh interStefanProblem  # OpenFOAM tutorial verificationAndValidation/multiphase/StefanProblem (at 2x resolution)
+sh run.sh porousDamBreak      # OpenFOAM tutorial verificationAndValidation/multiphase/interIsoFoam/porousDamBreak (at 2x resolution)
+sh run.sh closedPipe 16       # FreeMHD case file
 sh run.sh fringingBField 16   # FreeMHD case file
 ```
 
