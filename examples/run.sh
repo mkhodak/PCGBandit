@@ -26,7 +26,7 @@ if [ -z $NAME ] ; then
     NPROC=1  
   fi
   SEED=0
-  #DEBUG=True
+  DEBUG=True
 fi
 rm -rf $NAME/$NPROC/$SEED
 mkdir -p $NAME/$NPROC/$SEED
@@ -35,11 +35,50 @@ cd $NAME/$NPROC/$SEED
 module load gcc/11 openmpi/gcc/4.1.6 
 source $FOAM/etc/bashrc
 
-BACKSTOP=' maxIter 2000; cacheAgglomeration no;'
 DEFAULT='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; static 8;'
 
 ################################################################################
 ##################################   cases   ###################################
+################################################################################
+
+if [ $NAME == "boxTurb32" ] ; then
+
+  SWEEP=True
+
+  cp -r $FOAM_TUTORIALS/DNS/dnsFoam/boxTurb16 boxTurb32
+  cd boxTurb32
+
+  sed -i '16a\libs ( libICTCPreconditioner.so libPCGBandit.so );\
+  ' system/controlDict
+  sed -i '18a\randomSeed\t\t\t'"$SEED"';\
+  ' system/controlDict
+  sed -i 's/writeInterval   0\.25/writeInterval   100/' system/controlDict
+  if [ $DEBUG ] ; then
+    sed -i 's/endTime         10/endTime         0.01/' system/controlDict
+  fi
+
+  sed -i 's/16/32/g' system/blockMeshDict
+  sed -i 's/nonuniform List<vector>/uniform (0 0 0);/' 0.orig/U
+  sed -i '20,4119d' 0.orig/U
+  sed -i 's/deltaT          0\.025/deltaT          0.005/' system/controlDict
+
+  sed -i '21d' system/fvSolution
+  sed -i 's/preconditioner  DIC;/'"$DEFAULT"'/' system/fvSolution
+
+  runSimulation() {
+    sed -i 's/'"$DEFAULT"'/'"$1"'/' system/fvSolution
+    cp -r 0.orig 0
+    blockMesh > log.blockMesh
+    boxTurb > log.boxTurb
+    echo $2 $1
+    dnsFoam > log.dnsFoam
+    mv log.dnsFoam $2
+    foamCleanTutorials
+    sed -i 's/'"$1"'/'"$DEFAULT"'/' system/fvSolution
+  }
+
+fi
+
 ################################################################################
 
 if [ $NAME == "pitzDaily" ] ; then
@@ -130,6 +169,66 @@ if [ $NAME == "interStefanProblem" ] ; then
       interCondensatingEvaporatingFoam > log.interCondensatingEvaporatingFoam
     fi
     mv log.interCondensatingEvaporatingFoam $2
+    foamCleanTutorials
+    sed -i 's/'"$1"'/'"$DEFAULT"'/' system/fvSolution
+  }
+
+fi
+
+################################################################################
+
+if [ $NAME == "porousDamBreak" ] ; then
+
+  if [ $NPROC -ge 16 ] ; then
+    SWEEP=True
+  fi
+
+  cp -r $FOAM_TUTORIALS/verificationAndValidation/multiphase/interIsoFoam/porousDamBreak porousDamBreak
+  cd porousDamBreak
+
+  sed -i '16a\libs ( libICTCPreconditioner.so libPCGBandit.so );\
+  ' system/controlDict
+  sed -i '18a\randomSeed\t\t\t'"$SEED"';\
+  ' system/controlDict
+  sed -i 's/writeInterval   0\.05/writeInterval   10/' system/controlDict
+  if [ $DEBUG ] ; then
+    sed -i 's/endTime         4/endTime         0.004/' system/controlDict
+  fi
+
+  sed -i 's/(75 93 1)/(150 186 1)/' system/blockMeshDict
+  sed -i 's/(73 93 1)/(146 186 1)/' system/blockMeshDict
+  sed -i 's/(76 93 1)/(152 186 1)/' system/blockMeshDict
+  sed -i 's/(75 53 1)/(150 106 1)/' system/blockMeshDict
+  sed -i 's/(73 53 1)/(146 106 1)/' system/blockMeshDict
+  sed -i 's/(76 53 1)/(152 106 1)/' system/blockMeshDict
+
+  sed -i '/solver *PCG;/d' system/fvSolution
+  sed -i 's/preconditioner *DIC;/'"$DEFAULT"'/' system/fvSolution
+
+  runSimulation() {
+    sed -i 's/'"$DEFAULT"'/'"$1"'/' system/fvSolution
+    cp -r 0.orig 0
+    blockMesh > log.blockMesh
+    setFields > log.setFields
+    echo $2 $1
+    if (( $NPROC > 1 )) ; then
+      sed -i 's/numberOfSubdomains.*;/numberOfSubdomains '"$NPROC"';/' system/decomposeParDict
+      for n in $(seq 0 $NPROC) ; do
+        if (( $((n * n)) == $NPROC )) ; then
+          sed -i 's/n *(.*1);/n ('"$n"' '"$n"' 1);/' system/decomposeParDict
+          break
+        fi
+      done
+      decomposePar > log.decomposePar
+      if [ $DEBUG ] ; then
+        mpirun -n $NPROC interIsoFoam -parallel > log.interIsoFoam
+      else
+        srun -n $NPROC interIsoFoam -parallel > log.interIsoFoam
+      fi
+    else
+      interIsoFoam > log.interIsoFoam
+    fi
+    mv log.interIsoFoam $2
     foamCleanTutorials
     sed -i 's/'"$1"'/'"$DEFAULT"'/' system/fvSolution
   }
@@ -264,21 +363,21 @@ fi
 ################################################################################
 
 if [ $SWEEP ] ; then
-  STATIC=`seq 0 32`
+  STATIC=`seq 0 32`   # try all configurations
 else
-  STATIC='8 21'
+  STATIC='8 21'       # try DIC & GAMG(DIC+GS)
 fi
 
 for S in $STATIC ; do
   LOGFILE=../staticPCG_"$S"
-  SOLVER='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; static '"$S"';'"$BACKSTOP"
+  SOLVER='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; static '"$S"'; maxIter 2000; cacheAgglomeration no;'
   runSimulation "$SOLVER" $LOGFILE
   echo "$SOLVER" >> $LOGFILE
 done
 
 ################################################################################
 
-SOLVER='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8;'"$BACKSTOP"
+SOLVER='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; maxIter 2000; cacheAgglomeration no;'
 runSimulation "$SOLVER" ../PCGBandit
 
 ################################################################################
