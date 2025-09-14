@@ -12,6 +12,7 @@
 #include "Random.H"
 
 //#define PCGB_DEBUG
+//#define DUMP_ABSOL
 
 // * * * * * * * * * * * * * * Static Data Members * * * * * * * * * * * * * //
 
@@ -57,6 +58,10 @@ namespace Foam
     dictionary previousDiags;
     dictionary previousLowers;
     dictionary previousTargets;
+    #endif
+
+    #ifdef DUMP_ABSOL
+    #include "initializeDumping.H"
     #endif
 
 }
@@ -466,28 +471,32 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
 ) const
 {
 
+    #ifdef DUMP_ABSOL
+    #include "startDump.H"
+    #endif
+
     #ifdef PCGB_DEBUG
-    scalarField currentDiag = scalarField(matrix_.diag());
-    scalarField currentLower = scalarField(matrix_.lower());
-    scalarField currentTarget = scalarField(source);
+    solveScalarField currentDiag = solveScalarField(matrix_.diag());
+    solveScalarField currentLower = solveScalarField(matrix_.lower());
+    solveScalarField currentTarget = solveScalarField(source);
     Info<< "\tsq Frob norm of current diag: " << gSum(sqr(currentDiag)) << endl;
     Info<< "\tsq Frob norm of current lower: " << gSum(sqr(currentLower)) << endl;
     Info<< "\tsq Eucl norm of current target: " << gSum(sqr(currentTarget)) << endl;
     if (initialDiags.found(banditName_)) {
-        Info<< "\tsq Frob dist from initial diag: " << gSum(sqr(currentDiag - initialDiags.get<scalarField>(banditName_))) << endl;
-        Info<< "\tsq Frob dist from initial lower: " << gSum(sqr(currentLower - initialLowers.get<scalarField>(banditName_))) << endl;
-        Info<< "\tsq Eucl norm from initial target: " << gSum(sqr(currentTarget - initialTargets.get<scalarField>(banditName_))) << endl;
-        Info<< "\tsq Frob dist from previous diag: " << gSum(sqr(currentDiag - previousDiags.get<scalarField>(banditName_))) << endl;
-        Info<< "\tsq Frob dist from previous lower: " << gSum(sqr(currentLower - previousLowers.get<scalarField>(banditName_))) << endl;
-        Info<< "\tsq Eucl norm from previous target: " << gSum(sqr(currentTarget - previousTargets.get<scalarField>(banditName_))) << endl;
+        Info<< "\tsq Frob dist from initial diag: " << gSum(sqr(currentDiag - initialDiags.get<solveScalarField>(banditName_))) << endl;
+        Info<< "\tsq Frob dist from initial lower: " << gSum(sqr(currentLower - initialLowers.get<solveScalarField>(banditName_))) << endl;
+        Info<< "\tsq Eucl norm from initial target: " << gSum(sqr(currentTarget - initialTargets.get<solveScalarField>(banditName_))) << endl;
+        Info<< "\tsq Frob dist from previous diag: " << gSum(sqr(currentDiag - previousDiags.get<solveScalarField>(banditName_))) << endl;
+        Info<< "\tsq Frob dist from previous lower: " << gSum(sqr(currentLower - previousLowers.get<solveScalarField>(banditName_))) << endl;
+        Info<< "\tsq Eucl norm from previous target: " << gSum(sqr(currentTarget - previousTargets.get<solveScalarField>(banditName_))) << endl;
     } else {
-        initialDiags.add<scalarField>(banditName_, currentDiag);
-        initialLowers.add<scalarField>(banditName_, currentLower);
-        initialTargets.add<scalarField>(banditName_, currentTarget);
+        initialDiags.add<solveScalarField>(banditName_, currentDiag);
+        initialLowers.add<solveScalarField>(banditName_, currentLower);
+        initialTargets.add<solveScalarField>(banditName_, currentTarget);
     }
-    previousDiags.set<scalarField>(banditName_, currentDiag);
-    previousLowers.set<scalarField>(banditName_, currentLower);
-    previousTargets.set<scalarField>(banditName_, currentTarget);
+    previousDiags.set<solveScalarField>(banditName_, currentDiag);
+    previousLowers.set<solveScalarField>(banditName_, currentLower);
+    previousTargets.set<solveScalarField>(banditName_, currentTarget);
     #endif
 
     // --- Setup class containing solver performance data
@@ -711,6 +720,10 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
         Info<< ", costEstimate=" << costEstimate;
     }
     Info<< endl;
+
+    #ifdef DUMP_ABSOL
+    #include "finishDump.H"
+    #endif
 
     return solverPerf;
 }
