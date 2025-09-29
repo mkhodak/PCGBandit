@@ -44,9 +44,9 @@ class PCGBandit
 
     word banditName_;
     word lossEstimator_;
-    scalar learningRate_;
     bool deterministic_;
     bool randomUniform_;
+    word banditAlgorithm_;
     label seed_;
     label backstop_;
     label static_;
@@ -57,11 +57,7 @@ class PCGBandit
     label dGAMG_;
     bool cacheAgglomeration_;
 
-    scalar Newton(scalarField& probs, scalar x, const scalarField& k, const scalar eta) const;
-    void queryTsallisINF(const scalar initialResidual) const;
-
-    scalar lossEstimate(const scalar loss, const scalar p, const scalar t, const scalar scale) const;
-    void updateTsallisINF(const scalar loss) const;
+    void queryLearner(const scalar initialResidual) const;
 
     scalar perIterationCostEstimate(const word preconditioner) const;
     scalar totalCostEstimate(const label nIterations) const;

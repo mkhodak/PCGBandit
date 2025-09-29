@@ -106,18 +106,12 @@ Foam::PCGBandit::PCGBandit
 
     // --- Learning algorithm specification
     lossEstimator_ = solverControls.getOrDefault<word>("lossEstimator", "IW");
-    if (lossEstimator_ == "RV") { 
-        learningRate_ = 4.0;
-    } else if (lossEstimator_ == "IW") {
-        learningRate_ = 2.0;
-    } else {
-        FatalErrorIn("Foam::PCGBandit::PCGBandit") << "lossEstimator " << lossEstimator_ << " not implemented" << exit(FatalError);
-    } 
     deterministic_ = Switch(solverControls.getOrDefault<word>("deterministic", "no"));
     seed_ = mesh.time().controlDict().getOrDefault<label>("randomSeed", 0);
     backstop_ = solverControls.getOrDefault<label>("backstop", -1);
     static_ = label(solverControls.getOrDefault<label>("static", -1));
     randomUniform_ = Switch(solverControls.getOrDefault<word>("randomUniform", "no"));
+    banditAlgorithm_ = solverControls.getOrDefault<word>("banditAlgorithm", "TsallisINF");
 
     // --- Configuration space initialization
     if (learningDicts.size() == 0) {
@@ -165,30 +159,7 @@ Foam::PCGBandit::PCGBandit
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
 
-Foam::scalar Foam::PCGBandit::Newton
-(
-    scalarField& probs,
-    scalar x,
-    const scalarField& lhat,
-    const scalar eta
-) const
-{
-
-    scalar update;
-    for (label j = 0; j < 100; j++) {
-        probs = 2.0  / (eta * (lhat - x));
-        probs *= probs;
-        update = (sum(probs) - 1.0) / (eta * sum(pow(probs, 1.5)));
-        x -= update;
-        if (mag(update) < 1e-08) {
-            return x;
-        }
-    }
-    Info<< "Newton solver did not converge: " << update << endl;
-    return x;
-}
-
-void Foam::PCGBandit::queryTsallisINF
+void Foam::PCGBandit::queryLearner
 (
     const scalar initialResidual
 ) const
@@ -201,82 +172,30 @@ void Foam::PCGBandit::queryTsallisINF
 
             dictionary& learningDict = learningDicts.subDictOrAdd(banditName_);
             label d = numDroptols_ + 1 + dGAMG_;
-            scalarField probs_(d);
             #ifdef PCGB_DEBUG
             Info<< "PCGBandit INFO:" << endl;
             #endif
 
             if (randomUniform_) {
-                probs_ = 1.0 / scalar(d);
+                i = floor(scalar(d) * rndGen.sample01<scalar>());
+            } else if (banditAlgorithm_ == "ThompsonSampling") {
+                #include "ThompsonSampling.H"
             } else {
-                scalar t = learningDict.getOrAdd("t", 0.0);
-                t = t + 1.0;
-                learningDict.set<scalar>("t", t);
-                if (t == 1.0) {
-                    scalarField IW(d, 0.0);
-                    learningDict.set<scalarField>("IW", IW);
-                    if (lossEstimator_ == "RV") {
-                        scalarField shift(d, 0.0);
-                        learningDict.set<scalarField>("shift", shift);
-                    }
-                    probs_ = 1.0 / scalar(d);
-                    learningDict.set<scalar>("scale", 1.0);
-                    learningDict.set<scalar>("x", -1.0);
-                } else {
-                    // --- Compute loss estimator
-                    scalarField lhat = learningDict.get<scalarField>("IW") / learningDict.get<scalar>("scale");
-                    if (lossEstimator_ == "RV") {
-                        lhat += learningDict.get<scalarField>("shift");
-                    }
-
-                    // --- Saved initialization for Newton solve
-                    scalar x = learningDict.get<scalar>("x");
-
-                    // --- Updates probabilities as a side effect
-                    learningDict.set<scalar>("x", Newton(probs_, x, lhat, learningRate_ / sqrt(t)));
-                }
-            }
-                
-            #ifdef PCGB_DEBUG
-            Info<< "\tprobabilities: " << probs_ << endl;
-            Info<< "\tselected: ";
-            #endif
-
-            // --- Naive random sampling
-            scalar r = rndGen.sample01<scalar>() * sum(probs_);
-            scalar cumulative = 0.0;
-            for (i = 0; i < d; i++) {
-                cumulative += probs_[i];
-                if (r <= cumulative) {
-                    break;
-                }
-            }
-            learningDict.set<label>("i", i);
-            learningDict.set<scalar>("p", probs_[i]);
-
-            if (lossEstimator_ == "RV" && !randomUniform_) {
-                scalarField shift = learningDict.get<scalarField>("shift");
-                scalar t = learningDict.get<scalar>("t");
-                for (label j = 0; j < d; j++) {
-                    scalar p = probs_[j];
-                    if (t * p >= 16.0) {
-                        shift[j] += 0.5;
-                        if (i == j) {
-                            shift[j] -= 0.5 / p;
-                        }
-                    }
-                }
-                learningDict.set<scalarField>("shift", shift);
+                #include "TsallisINF.H"
             }
 
         }
 
         Pstream::scatter(i);
 
-    #ifdef PCGB_DEBUG
+        #ifdef PCGB_DEBUG
+        Info<< "\tselected: ";
+
     } else {
+
         Info<< "Static INFO: ";
-    #endif
+        #endif
+
     }
 
     if (i == numDroptols_) {
@@ -341,25 +260,6 @@ void Foam::PCGBandit::queryTsallisINF
         #endif
     }
     preconditionerDict.set("preconditioner", subDict);
-}
-
-
-void Foam::PCGBandit::updateTsallisINF
-(
-    const scalar loss
-) const
-{
-    if (static_ == -1 && !randomUniform_ && Pstream::myProcNo() == 0) {
-        dictionary& learningDict = learningDicts.subDict(banditName_);
-        scalar t = learningDict.get<scalar>("t");
-        scalar scale = (learningDict.get<scalar>("scale") * (t-1.0) + loss) / t;
-        learningDict.set<scalar>("scale", scale);
-        scalarField IW = learningDict.get<scalarField>("IW");
-        label i = learningDict.get<label>("i");
-        scalar p = learningDict.get<scalar>("p");
-        IW[i] += loss / p;
-        learningDict.set<scalarField>("IW", IW);
-    }
 }
 
 
@@ -580,7 +480,7 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
 
                 // --- Get preconditioner from learning algorithm
                 learningTime = learningTime.now();
-                queryTsallisINF(solverPerf.initialResidual());
+                queryLearner(solverPerf.initialResidual());
                 learningTime -= clockValue::now();
                 preconstructTime = preconstructTime.now();
                 preconPtr = lduMatrix::preconditioner::New(*this, preconditionerDict);
@@ -688,20 +588,26 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
 
     }
 
-    // --- Compute and pass solver cost to learning algorithm
     solverTime -= clockValue::now();
     learningTime += clockValue::now();
     scalar costEstimate = 0.0;
     if (solverPerf.nIterations() > 0) {
+
+        // --- Compute solver cost
         if (deterministic_) {
-            costEstimate = totalCostEstimate(solverPerf.nIterations());
+            costEstimate = 1e-9 * totalCostEstimate(solverPerf.nIterations());
         } else {
             costEstimate = -solverTime;
         }
-        updateTsallisINF(costEstimate);
+
+        // --- Pass cost to learning algorithm
+        if (static_ == -1 && !randomUniform_ && Pstream::myProcNo() == 0) {
+            dictionary& learningDict = learningDicts.subDict(banditName_);
+            learningDict.set<scalar>("loss", costEstimate);
+        }
+
     }
     learningTime -= clockValue::now();
-
     PCGTime -= solverTime;
 
     Info<< "INFO: banditName=" << banditName_;
