@@ -105,7 +105,7 @@ Foam::PCGBandit::PCGBandit
     }
 
     // --- Learning algorithm specification
-    lossEstimator_ = solverControls.getOrDefault<word>("lossEstimator", "IW");
+    lossEstimator_ = solverControls.getOrDefault<word>("lossEstimator", "RV");
     deterministic_ = Switch(solverControls.getOrDefault<word>("deterministic", "no"));
     seed_ = mesh.time().controlDict().getOrDefault<label>("randomSeed", 0);
     backstop_ = solverControls.getOrDefault<label>("backstop", -1);
