@@ -8,11 +8,6 @@
 #SBATCH --nodelist=della-r3c[1-4]n[1-16]
 #SBATCH --nodes=1
 
-hostname
-if [ -z $FOAM ] ; then
-  echo "OpenFOAM directory not found"
-fi
-
 NAME=$SLURM_JOB_NAME
 NPROC=$SLURM_NTASKS
 SEED=$SLURM_ARRAY_TASK_ID
@@ -32,8 +27,12 @@ rm -rf $NAME/$NPROC/$SEED
 mkdir -p $NAME/$NPROC/$SEED
 cd $NAME/$NPROC/$SEED
 
-module load gcc/11 openmpi/gcc/4.1.6 
-source $FOAM/etc/bashrc
+if [ -z $FOAM ] ; then
+  echo "OpenFOAM directory not found; assuming script is executing inside a container started by launch.sh"
+else
+  module load gcc/11 openmpi/gcc/4.1.6 
+  source $FOAM/etc/bashrc
+fi
 
 DEFAULT='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; static 8;'
 
@@ -160,7 +159,7 @@ if [ $NAME == "interStefanProblem" ] ; then
     if (( $NPROC > 1 )) ; then
       sed -i 's/numberOfSubdomains.*;/numberOfSubdomains '"$NPROC"';/' system/decomposeParDict
       decomposePar > log.decomposePar
-      if [ $DEBUG ] ; then
+      if [ $DEBUG ] || [ -z $FOAM ] ; then
         mpirun -n $NPROC interCondensatingEvaporatingFoam -parallel > log.interCondensatingEvaporatingFoam
       else
         srun -n $NPROC interCondensatingEvaporatingFoam -parallel > log.interCondensatingEvaporatingFoam
@@ -220,7 +219,7 @@ if [ $NAME == "porousDamBreak" ] ; then
         fi
       done
       decomposePar > log.decomposePar
-      if [ $DEBUG ] ; then
+      if [ $DEBUG ] || [ -z $FOAM ] ; then
         mpirun -n $NPROC interIsoFoam -parallel > log.interIsoFoam
       else
         srun -n $NPROC interIsoFoam -parallel > log.interIsoFoam
@@ -238,6 +237,9 @@ fi
 ################################################################################
 
 if [ $NAME == "closedPipe" ] ; then
+
+  echo "running FreeMHD simulation; assuming examples/FreeMHD.zip has been unzipped"
+  wmake ../../../FreeMHD/solvers/epotMultiRegionInterFoam
 
   cp -r ../../../FreeMHD/closedPipe .
   cd closedPipe
@@ -275,7 +277,7 @@ if [ $NAME == "closedPipe" ] ; then
         sed -i 's/numberOfSubdomains.*;/numberOfSubdomains '"$NPROC"';/' system/$region/decomposeParDict
       done
       decomposePar -allRegions -force -fileHandler collated > log.decomposePar
-      if [ $DEBUG ] ; then
+      if [ $DEBUG ] || [ -z $FOAM ] ; then
         mpirun -n $NPROC epotMultiRegionInterFoam -parallel > log.epotMultiRegionInterFoam
       else
         srun -n $NPROC epotMultiRegionInterFoam -parallel > log.epotMultiRegionInterFoam
@@ -300,6 +302,9 @@ fi
 ################################################################################
 
 if [ $NAME == 'fringingBField' ] ; then
+
+  echo "running FreeMHD simulation; assuming examples/FreeMHD.zip has been unzipped"
+  wmake ../../../FreeMHD/solvers/epotMultiRegionInterFoam
 
   cp -r ../../../FreeMHD/fringingBField .
   cd fringingBField
@@ -336,7 +341,7 @@ if [ $NAME == 'fringingBField' ] ; then
         sed -i 's/numberOfSubdomains.*;/numberOfSubdomains '"$NPROC"';/' system/$region/decomposeParDict
       done
       decomposePar -allRegions -force -fileHandler collated > log.decomposePar
-      if [ $DEBUG ] ; then
+      if [ $DEBUG ] || [ -z $FOAM ] ; then
         mpirun -n $NPROC epotMultiRegionInterFoam -parallel > log.epotMultiRegionInterFoam
       else
         srun -n $NPROC epotMultiRegionInterFoam -parallel > log.epotMultiRegionInterFoam
@@ -370,14 +375,14 @@ fi
 
 for S in $STATIC ; do
   LOGFILE=../staticPCG_"$S"
-  SOLVER='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; static '"$S"'; maxIter 2000; cacheAgglomeration no;'
+  SOLVER='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; static '"$S"'; backstop 10000; cacheAgglomeration no;'
   runSimulation "$SOLVER" $LOGFILE
   echo "$SOLVER" >> $LOGFILE
 done
 
 ################################################################################
 
-SOLVER='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; maxIter 2000; cacheAgglomeration no;'
+SOLVER='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; backstop 10000; cacheAgglomeration no;'
 runSimulation "$SOLVER" ../PCGBandit
 
 ################################################################################
