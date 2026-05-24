@@ -2,34 +2,32 @@
 
 Package for tuning PCG preconditioners in OpenFOAM simulations on-the-fly.
 Includes an implementation of a thresholded incomplete Cholesky (ICT) preconditioner.
-Everything in this package assumes an existing OpenFOAM installation.
+This repository is for the publication version of the software; an updated version with additional features is maintainted [here](https://github.com/the-lens-project/PCGBandit).
 
 ## Usage
 
-To try PCGBandit do the following:
+Assuming only a Docker installation, an OpenCFD container with the compiled code can be launched by running `sh launch.sh`.
+Assuming an existing compatible OpenFOAM installation, PCGBandit can be compiled by executing `wmake libso` in the `src/PCGBandit` and `src/ICTC` directories.
+Once either is complete, to try PCGBandit go to your OpenFOAM case directory's `system` subfolder and do the following:
 
-1. `cd src/PCGBandit && wmake libso && cd ../..`
-2. `cd src/ICTC && wmake libso && cd ../..`
-3. in your OpenFOAM case directory's `system` subfolder:  
-    * add the line `libs ( libICTCPreconditioner.so libPCGBandit.so );` to the  `controlDict` file  
-    * for any PCG solver to be tuned, replace its `solver` and `preconditioner` specifications in the `fvSolution` file with (e.g.) `solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8;`. Keywords ending with `Tune` indicate tuning those keywords of the `GAMG` preconditioner. The `numDroptols` keyword indicates how many thresholds to consider when tuning the `ICTC` preconditioner.
+1. Add the line `libs ( libICTCPreconditioner.so libPCGBandit.so );` to the  `controlDict` file  
+2. For any PCG solver to be tuned, replace its `solver` and `preconditioner` specifications in the `fvSolution` file with (e.g.) `solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8;`. Keywords ending with `Tune` indicate tuning those keywords of the `GAMG` preconditioner. The `numDroptols` keyword indicates how many thresholds to consider when tuning the `ICTC` preconditioner.
 
 The `ICTC` preconditioner may also be used on its own as a preconditioner for `PCG` by replacing (e.g.) `preconditioner DIC;` with `preconditioner ICTC;` in the relevant `fvSolution` file.
 Similarly, PCGBandit can also be run without ICT by setting `numDroptols 0;` (the default).
 
 ## Examples
 
-Assuming both `src/PCGBandit` and `src/ICTC` have been compiled, the script `examples/run.sh` can be used.
 The first argument to the script specifies the simulation while the second specifies the number of cores.
-Below are some example commands (only these cases are currently implemented in `run.sh`).
-The last two assume the [FreeMHD solver](https://github.com/PlasmaControl/FreeMHD/tree/main/MHD_Solvers/solvers/epotMultiRegionInterFoam) `epotMultiRegionInterFoam` has been compiled.
+Below are the commands that can be executed inside the Docker container launched by running `sh launch.sh`, or alternatively assuming the variable `$FOAM` is set to the home directory of a compatible OpenFOAM installation.
+The last two assume `examples/FreeMHD.zip` has been unzipped.
 ```
-sh run.sh boxTurb32           # OpenFOAM tutorial DNS/dnsFoam/boxTurb16 (at 2x resolution)
-sh run.sh pitzDaily           # OpenFOAM tutorial incompressible/pimpleFoam/RAS/pitzDaily (at 2x resolution)
-sh run.sh interStefanProblem  # OpenFOAM tutorial verificationAndValidation/multiphase/StefanProblem (at 2x resolution)
-sh run.sh porousDamBreak      # OpenFOAM tutorial verificationAndValidation/multiphase/interIsoFoam/porousDamBreak (at 2x resolution)
-sh run.sh closedPipe 16       # FreeMHD case file
-sh run.sh fringingBField 16   # FreeMHD case file
+bash run.sh boxTurb32           # OpenFOAM tutorial DNS/dnsFoam/boxTurb16 (at 2x resolution)
+bash run.sh pitzDaily           # OpenFOAM tutorial incompressible/pimpleFoam/RAS/pitzDaily (at 2x resolution)
+bash run.sh interStefanProblem  # OpenFOAM tutorial verificationAndValidation/multiphase/StefanProblem (at 2x resolution)
+bash run.sh porousDamBreak      # OpenFOAM tutorial verificationAndValidation/multiphase/interIsoFoam/porousDamBreak (at 2x resolution)
+bash run.sh closedPipe 16       # FreeMHD case file
+bash run.sh fringingBField 16   # FreeMHD case file
 ```
 
 ## References
