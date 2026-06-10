@@ -21,7 +21,7 @@ if [ -z $NAME ] ; then
     NPROC=1  
   fi
   SEED=0
-  #DEBUG=True
+  DEBUG=True
 fi
 rm -rf $NAME/$NPROC/$SEED
 mkdir -p $NAME/$NPROC/$SEED
@@ -242,7 +242,6 @@ if [ $NAME == "porousDamBreak" ] ; then
   ' system/controlDict
   sed -i '18a\randomSeed\t\t\t'"$SEED"';\
   ' system/controlDict
-  sed -i 's/writeInterval   0\.05/writeInterval   0.01/' system/controlDict
   if [ ! $DUMP ] ; then
     sed -i 's/writeInterval   0\.05/writeInterval   10/' system/controlDict
   fi
@@ -378,7 +377,9 @@ if [ $NAME == 'fringingBField' ] ; then
   ' system/controlDict
   sed -i '21a\randomSeed\t\t\t'"$SEED"';\
   ' system/controlDict
-  if [ ! $DUMP ] ; then
+  if [ $DUMP ] ; then
+    sed -i 's/writeInterval   0.1/writeInterval   0.01/' system/controlDict
+  else
     sed -i 's/writeInterval   0.1/writeInterval   1/' system/controlDict
   fi
   if [ $DEBUG ] ; then
