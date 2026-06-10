@@ -1,7 +1,19 @@
 if (mesh.time().writeTime()) {
 
+    const label numDumps = numDumpsDict.get<label>(banditName_);
+
     std::stringstream subdir;
-    subdir << fieldName_ << "-Absol/" << numDumpsDict.get<label>(banditName_) << "/";
+    subdir << fieldName_ << "-Absol/" << numDumps << "/";
+
+    // Global cell numbering, so the per-processor pieces can be assembled into
+    // a single monolithic global matrix in Absol.py. Collective: every rank 
+    // constructs it in lock-step inside this writeTime block.
+    const globalIndex globalNumbering(nCells);
+    labelList globalCells(nCells);
+    forAll(globalCells, c)
+    {
+        globalCells[c] = globalNumbering.toGlobal(c);
+    }
 
     IOdictionary writeInfo
     (
@@ -28,25 +40,29 @@ if (mesh.time().writeTime()) {
         mesh
     );
 
-    lowerAddrDict = check_and_dump<List<label>, IOList<label>>
+    // Internal-face structure (GLOBAL indices) and coefficients, deduplicated 
+    // against the most recent dump. The addressing is constant for a static 
+    // mesh, so it is dumped once and carried forward; the coefficients are re-
+    // dumped whenever they change (e.g. each timestep, but skipped across 
+    // correctors that reuse the same matrix).
+    check_and_dump<List<label>, IOList<label>>
     (
         banditName_,
         lowerAddrDict,
-        List<label>(matrix_.lduAddr().lowerAddr()),
+        globalNumbering.toGlobal(matrix_.lduAddr().lowerAddr()),
         subdir.str() + "lowerAddr",
         mesh
     );
-
-    upperAddrDict = check_and_dump<List<label>, IOList<label>>
+    check_and_dump<List<label>, IOList<label>>
     (
         banditName_,
         upperAddrDict,
-        List<label>(matrix_.lduAddr().upperAddr()),
+        globalNumbering.toGlobal(matrix_.lduAddr().upperAddr()),
         subdir.str() + "upperAddr",
         mesh
     );
 
-    lowerDict = check_and_dump<solveScalarField, IOField<solveScalar>>
+    check_and_dump<solveScalarField, IOField<solveScalar>>
     (
         banditName_,
         lowerDict,
@@ -55,29 +71,99 @@ if (mesh.time().writeTime()) {
         mesh
     );
 
-    autoPtr<solveScalarField> AxPtr(new solveScalarField(nCells, Foam::Zero));
-    solveScalarField& Ax = AxPtr();
-    matrix_.Amul(Ax, solveScalarField(nCells, Foam::One), interfaceBouCoeffs_, interfaces_, cmpt);
-    A1Dict = check_and_dump<solveScalarField, IOField<solveScalar>>
-    (
-        banditName_,
-        A1Dict,
-        Ax,
-        subdir.str() + "A1",
-        mesh
-    ); 
+    // Interface couplings as off-diagonal entries: A[row][col] = -bouCoeff,
+    // with row/col the global indices of the local/neighbour cells. Neighbour 
+    // global cell numbers are swapped across each interface (canonical 
+    // lduPrimitiveMesh pattern). The symmetric partner A[col][row] is 
+    // contributed by the neighbour subdomain.
+    PtrList<labelList> nbrGlobalCells(interfaces_.size());
+    {
+        const label startOfRequests = UPstream::nRequests();
+        forAll(interfaces_, inti)
+        {
+            if (interfaces_.set(inti))
+            {
+                interfaces_[inti].interface().initInternalFieldTransfer
+                (
+                    Pstream::commsTypes::nonBlocking,
+                    globalCells
+                );
+            }
+        }
+        UPstream::waitRequests(startOfRequests);
+        forAll(interfaces_, inti)
+        {
+            if (interfaces_.set(inti))
+            {
+                nbrGlobalCells.set
+                (
+                    inti,
+                    new labelList
+                    (
+                        interfaces_[inti].interface().internalFieldTransfer
+                        (
+                            Pstream::commsTypes::nonBlocking,
+                            globalCells
+                        )
+                    )
+                );
+            }
+        }
+    }
 
-    autoPtr<lduMatrix> identityPtr(new lduMatrix(mesh));
-    lduMatrix& identity = identityPtr();
-    identity.diag() = 1.0;
-    identity.lower() = 0.0;
-    identity.upper() = 0.0;
-    identity.Amul(Ax, source, interfaceBouCoeffs_, interfaces_, cmpt);
-    bDict = check_and_dump<solveScalarField, IOField<solveScalar>>
+    DynamicList<label> interfaceRow;
+    DynamicList<label> interfaceCol;
+    DynamicList<solveScalar> interfaceLower;
+    forAll(interfaces_, inti)
+    {
+        if (interfaces_.set(inti))
+        {
+            const labelUList& fc = interfaces_[inti].interface().faceCells();
+            const scalarField& bc = interfaceBouCoeffs_[inti];
+            const labelList& nbr = nbrGlobalCells[inti];
+            forAll(fc, f)
+            {
+                interfaceRow.append(globalCells[fc[f]]);
+                interfaceCol.append(nbr[f]);
+                interfaceLower.append(-bc[f]);
+            }
+        }
+    }
+
+    // Deduplicated like the internal structure: interfaceRow/interfaceCol 
+    // (addressing) are constant and dumped once; interfaceLower (coefficients)
+    // track the matrix. check_and_dump's collective decision keeps the 
+    // collated write unanimous.
+    check_and_dump<List<label>, IOList<label>>
     (
         banditName_,
-        bDict,
-        Ax,
+        interfaceRowDict,
+        labelList(interfaceRow),
+        subdir.str() + "interfaceRow",
+        mesh
+    );
+    check_and_dump<List<label>, IOList<label>>
+    (
+        banditName_,
+        interfaceColDict,
+        labelList(interfaceCol),
+        subdir.str() + "interfaceCol",
+        mesh
+    );
+    check_and_dump<solveScalarField, IOField<solveScalar>>
+    (
+        banditName_,
+        interfaceLowerDict,
+        solveScalarField(interfaceLower),
+        subdir.str() + "interfaceLower",
+        mesh
+    );
+
+    // Right-hand side: with the interface coupling represented in the matrix, 
+    // the RHS is simply the (local) source vector.
+    dump<solveScalarField, IOField<solveScalar>>
+    (
+        source,
         subdir.str() + "b",
         mesh
     );

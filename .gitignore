@@ -1,0 +1,17 @@
+# OpenFOAM wmake build artifacts
+Make/linux*/
+lnInclude/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor swap files
+*.swp
+.*.swp
+
+# Unzipped example archive (tracked as examples/FreeMHD.zip)
+/examples/FreeMHD/
+
+# Benchmark run/dump output created by examples/run.sh
+/examples/closedPipe/

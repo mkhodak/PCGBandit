@@ -1,14 +1,13 @@
-#include "IOdictionary.H"
-#include "objectRegistry.H"
-
-
 dictionary numDumpsDict;
-dictionary diagDict;
-dictionary lowerAddrDict;
-dictionary upperAddrDict; 
-dictionary lowerDict;
-dictionary A1Dict;
-dictionary bDict;
+
+// Most-recent-dump reference values, keyed by banditName, for deduplication.
+HashTable<solveScalarField> diagDict;
+HashTable<solveScalarField> lowerDict;
+HashTable<solveScalarField> interfaceLowerDict;
+HashTable<List<label>> lowerAddrDict;
+HashTable<List<label>> upperAddrDict;
+HashTable<List<label>> interfaceRowDict;
+HashTable<List<label>> interfaceColDict;
 
 
 template <typename DataType, typename IOType>
@@ -32,38 +31,34 @@ void dump(
 
 
 template <typename DataType, typename IOType>
-dictionary check_and_dump(
+void check_and_dump(
     const word key,
-    dictionary dataDict,
+    HashTable<DataType>& store,
     const DataType& current,
     const word fname,
-    const fvMesh& mesh
-    ) {
+    const fvMesh& mesh) {
 
-    bool different = false;
-    if (numDumpsDict.get<label>(key) > 1) {
-        DataType previous = dataDict.get<DataType>(key);
+    // Deduplicate against most recent dump. The stored reference is updated on
+    // every write, so the comparison is always against the latest dump.
+    bool different = true;
+    if (store.found(key)) {
+        const DataType& previous = store[key];
         if (previous.size() == current.size()) {
-            label i;
-            for (i = 0; i < current.size(); i++) {
+            different = false;
+            for (label i = 0; i < current.size(); i++) {
                 if (previous[i] != current[i]) {
                     different = true;
                     break;
                 }
             }
-            for (i = i; i < current.size(); i++) {
-                previous[i] = current[i];
-            }
         }
-    } else {
-        different = true;
-        dataDict.set<DataType>(key, current);
     }
 
-    if (different) {
+    // Collective: write on every rank iff the data changed on ANY rank, so the
+    // decision is unanimous and a collated (single-file) write stays consistent.
+    if (returnReduce(label(different), maxOp<label>()) > 0) {
+        store.set(key, current);
         dump<DataType, IOType>(current, fname, mesh);
     }
-
-    return dataDict;
 
 }

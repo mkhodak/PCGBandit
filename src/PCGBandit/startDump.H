@@ -16,7 +16,7 @@ if (mesh.time().writeTime()) {
         mesh
     );
 
-    diagDict = check_and_dump<solveScalarField, IOField<solveScalar>>
+    check_and_dump<solveScalarField, IOField<solveScalar>>
     (
         banditName_,
         diagDict,

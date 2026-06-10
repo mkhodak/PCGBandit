@@ -34,6 +34,33 @@ else
   source $FOAM/etc/bashrc
 fi
 
+# Set DUMP=True to save everything needed to reconstruct the linear systems
+# (matrices, RHS, solutions) of every solve into the directory passed as the
+# second argument to runSimulation. Requires "#define DUMP_ABSOL" in
+# src/PCGBandit/PCGBandit.C. Leave empty for normal benchmarking.
+DUMP=True
+
+# Save the solver logs, every <field>-Absol dump tree, and the parallel
+# cell/face/point/boundary processor addressing (needed to map the decomposed
+# cells back when assembling the global matrix) into directory $1, preserving
+# relative paths so Absol.py can read it directly. The bulk mesh geometry and
+# field data are discarded and the run output is reset for the next call. Works
+# for serial, decomposed (processorN) and collated (processorsN) runs.
+dumpSave() {
+  local dest=$1 p paths
+  mkdir -p "$dest"
+  mv log.* "$dest"/ 2>/dev/null
+  mapfile -t paths < <(find . \( -type d -name '*-Absol' -prune -print \) -o \
+    \( -type f -name '*ProcAddressing' -print \))
+  for p in "${paths[@]}" ; do
+    mkdir -p "$dest/$(dirname "$p")"
+    mv "$p" "$dest/$(dirname "$p")/"
+  done
+  rm -rf processor[0-9]* processors[0-9]* postProcessing 2>/dev/null
+  find . -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' ! -name '0' ! -name '0.orig' \
+    -exec rm -rf {} + 2>/dev/null
+}
+
 DEFAULT='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; static 8;'
 
 ################################################################################
@@ -42,7 +69,9 @@ DEFAULT='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCo
 
 if [ $NAME == "boxTurb32" ] ; then
 
-  SWEEP=True
+  if [ ! $DUMP ] ; then
+    SWEEP=True
+  fi
 
   cp -r $FOAM_TUTORIALS/DNS/dnsFoam/boxTurb16 boxTurb32
   cd boxTurb32
@@ -51,7 +80,9 @@ if [ $NAME == "boxTurb32" ] ; then
   ' system/controlDict
   sed -i '18a\randomSeed\t\t\t'"$SEED"';\
   ' system/controlDict
-  sed -i 's/writeInterval   0\.25/writeInterval   100/' system/controlDict
+  if [ ! $DUMP ] ; then
+    sed -i 's/writeInterval   0\.25/writeInterval   100/' system/controlDict
+  fi
   if [ $DEBUG ] ; then
     sed -i 's/endTime         10/endTime         0.01/' system/controlDict
   fi
@@ -71,8 +102,12 @@ if [ $NAME == "boxTurb32" ] ; then
     boxTurb > log.boxTurb
     echo $2 $1
     dnsFoam > log.dnsFoam
-    mv log.dnsFoam $2
-    foamCleanTutorials
+    if [ $DUMP ] ; then 
+      dumpSave $2
+    else 
+      mv log.dnsFoam $2
+      foamCleanTutorials
+    fi
     sed -i 's/'"$1"'/'"$DEFAULT"'/' system/fvSolution
   }
 
@@ -82,7 +117,9 @@ fi
 
 if [ $NAME == "pitzDaily" ] ; then
 
-  SWEEP=True
+  if [ ! DUMP ] ; then
+    SWEEP=True
+  fi
 
   cp -r $FOAM_TUTORIALS/incompressible/pimpleFoam/RAS/pitzDaily .
   cd pitzDaily
@@ -91,7 +128,11 @@ if [ $NAME == "pitzDaily" ] ; then
   ' system/controlDict
   sed -i '18a\randomSeed\t\t\t'"$SEED"';\
   ' system/controlDict
-  sed -i 's/writeInterval   0\.01/writeInterval   1/' system/controlDict
+  if [ $DUMP ] ; then
+    sed -i 's/writeInterval   0\.01/writeInterval   0.005/' system/controlDict
+  else
+    sed -i 's/writeInterval   0\.01/writeInterval   1/' system/controlDict
+  fi
   if [ $DEBUG ] ; then
     sed -i 's/endTime         0\.3/endTime         0.0003/' system/controlDict
   fi
@@ -113,8 +154,12 @@ if [ $NAME == "pitzDaily" ] ; then
     blockMesh > log.blockMesh
     echo $2 $1
     pimpleFoam > log.pimpleFoam
-    mv log.pimpleFoam $2
-    foamCleanTutorials
+    if [ $DUMP ] ; then 
+      dumpSave $2
+    else 
+      mv log.pimpleFoam $2
+      foamCleanTutorials
+    fi
     sed -i 's/'"$1"'/'"$DEFAULT"'/' system/fvSolution
   }
 
@@ -136,7 +181,11 @@ if [ $NAME == "interStefanProblem" ] ; then
   ' system/controlDict
   sed -i '19a\randomSeed\t\t\t'"$SEED"';\
   ' system/controlDict
-  sed -i 's/writeInterval   5/writeInterval   100/' system/controlDict
+  if [ $DUMP ] ; then
+    sed -i 's/writeInterval   5/writeInterval   1/' system/controlDict
+  else
+    sed -i 's/writeInterval   5/writeInterval   100/' system/controlDict
+  fi
   if [ $DEBUG ] ; then
     sed -i 's/endTime         50/endTime         1.4/' system/controlDict
   fi
@@ -167,8 +216,12 @@ if [ $NAME == "interStefanProblem" ] ; then
     else
       interCondensatingEvaporatingFoam > log.interCondensatingEvaporatingFoam
     fi
-    mv log.interCondensatingEvaporatingFoam $2
-    foamCleanTutorials
+    if [ $DUMP ] ; then 
+      dumpSave $2
+    else 
+      mv log.interCondensatingEvaporatingFoam $2
+      foamCleanTutorials
+    fi
     sed -i 's/'"$1"'/'"$DEFAULT"'/' system/fvSolution
   }
 
@@ -178,7 +231,7 @@ fi
 
 if [ $NAME == "porousDamBreak" ] ; then
 
-  if [ $NPROC -ge 16 ] ; then
+  if [ $NPROC -ge 16 ] && [ ! $DUMP ] ; then
     SWEEP=True
   fi
 
@@ -189,7 +242,10 @@ if [ $NAME == "porousDamBreak" ] ; then
   ' system/controlDict
   sed -i '18a\randomSeed\t\t\t'"$SEED"';\
   ' system/controlDict
-  sed -i 's/writeInterval   0\.05/writeInterval   10/' system/controlDict
+  sed -i 's/writeInterval   0\.05/writeInterval   0.01/' system/controlDict
+  if [ ! $DUMP ] ; then
+    sed -i 's/writeInterval   0\.05/writeInterval   10/' system/controlDict
+  fi
   if [ $DEBUG ] ; then
     sed -i 's/endTime         4/endTime         0.004/' system/controlDict
   fi
@@ -227,8 +283,12 @@ if [ $NAME == "porousDamBreak" ] ; then
     else
       interIsoFoam > log.interIsoFoam
     fi
-    mv log.interIsoFoam $2
-    foamCleanTutorials
+    if [ $DUMP ] ; then 
+      dumpSave $2
+    else 
+      mv log.interIsoFoam $2
+      foamCleanTutorials
+    fi
     sed -i 's/'"$1"'/'"$DEFAULT"'/' system/fvSolution
   }
 
@@ -249,7 +309,11 @@ if [ $NAME == "closedPipe" ] ; then
   ' system/controlDict
   sed -i '21a\randomSeed\t\t\t'"$SEED"';\
   ' system/controlDict
-  sed -i 's/writeInterval   1e-5/writeInterval   1e-1/' system/controlDict
+  if [ $DUMP ] ; then
+    sed -i 's/writeInterval   1e-5/writeInterval   5e-4/' system/controlDict
+  else
+    sed -i 's/writeInterval   1e-5/writeInterval   1e-1/' system/controlDict
+  fi
   if [ $DEBUG ] ; then
     sed -i 's/endTime         0.025/endTime         2.5e-6/' system/controlDict
   fi
@@ -285,14 +349,14 @@ if [ $NAME == "closedPipe" ] ; then
     else
       epotMultiRegionInterFoam > log.epotMultiRegionInterFoam
     fi
-    mv log.epotMultiRegionInterFoam $2
-
-    rm -rf log.*
-    rm -rf 0
-    rm -rf constant/cellToRegion
-    rm -rf postProcessing
+    if [ $DUMP ] ; then
+      dumpSave $2
+    else
+      mv log.epotMultiRegionInterFoam $2
+      rm -rf log.* 0 constant/cellToRegion postProcessing
+      for region in $(foamListRegions) ; do rm -rf constant/$region/polyMesh ; done
+    fi
     for region in $(foamListRegions) ; do
-      rm -rf constant/$region/polyMesh
       sed -i 's/'"$1"'/'"$DEFAULT"'/' system/$region/fvSolution
     done
   }
@@ -314,7 +378,9 @@ if [ $NAME == 'fringingBField' ] ; then
   ' system/controlDict
   sed -i '21a\randomSeed\t\t\t'"$SEED"';\
   ' system/controlDict
-  sed -i 's/writeInterval   0.1/writeInterval   1/' system/controlDict
+  if [ ! $DUMP ] ; then
+    sed -i 's/writeInterval   0.1/writeInterval   1/' system/controlDict
+  fi
   if [ $DEBUG ] ; then
     sed -i 's/endTime         0.5/endTime         5e-6/' system/controlDict
   fi
@@ -349,18 +415,25 @@ if [ $NAME == 'fringingBField' ] ; then
     else
       epotMultiRegionInterFoam > log.epotMultiRegionInterFoam
     fi
-    mv log.epotMultiRegionInterFoam $2
-
-    rm -rf log.*
-    rm -rf 0
-    rm -rf constant/cellToRegion
-    rm -rf postProcessing
+    if [ $DUMP ] ; then
+      dumpSave $2
+    else
+      mv log.epotMultiRegionInterFoam $2
+      rm -rf log.* 0 constant/cellToRegion postProcessing
+      for region in $(foamListRegions) ; do rm -rf constant/$region/polyMesh ; done
+    fi
     for region in $(foamListRegions) ; do
-      rm -rf constant/$region/polyMesh
       sed -i 's/'"$1"'/'"$DEFAULT"'/' system/$region/fvSolution
     done
   }
 
+fi
+
+# controlDict is stable after the case setup above, so apply the dump settings
+# once here (cwd is the case directory) to cover every runSimulation call.
+if [ $DUMP ] ; then
+  sed -i 's/^\( *purgeWrite *\).*/\10;/' system/controlDict
+  sed -i 's/^\( *writeFormat *\).*/\1binary;/' system/controlDict
 fi
 
 ################################################################################
@@ -377,7 +450,6 @@ for S in $STATIC ; do
   LOGFILE=../staticPCG_"$S"
   SOLVER='solver PCGBandit; preconditioner separate; smootherTune yes; nCellsInCoarsestLevelTune yes; mergeLevelsTune yes; numDroptols 8; static '"$S"'; backstop 10000; cacheAgglomeration no;'
   runSimulation "$SOLVER" $LOGFILE
-  echo "$SOLVER" >> $LOGFILE
 done
 
 ################################################################################
