@@ -10,13 +10,14 @@ from scipy import sparse as sp
 
 # Quantities stored as integer cell indices (labels).
 INT_QUANTS = {'lowerAddr', 'upperAddr', 'interfaceRow', 'interfaceCol'}
-# Quantities read per solve. The matrix values (diag/lower/interfaceLower) and the
-# addressing (lowerAddr/upperAddr/interfaceRow/interfaceCol) are deduplicated on the
-# .H side against the most recent dump: a file is written only when it changes,
-# so an absent file means "unchanged since the previous dump" and the most
-# recently loaded value is carried forward. (b/sol/init are written every solve.)
-LOAD_QUANTS = ['diag', 'lower', 'lowerAddr', 'upperAddr',
-               'interfaceRow', 'interfaceCol', 'interfaceLower', 'b']
+# Matrix values (diag/lower/interfaceLower) and addressing (lowerAddr/upperAddr/
+# interfaceRow/interfaceCol), deduplicated on the .H side against the most recent
+# dump: a file is written only when it changes, so an absent file means "unchanged
+# since the previous dump" and the most recently loaded value is carried forward.
+# The carry-forward state holds exactly these; b/sol/init are written every solve
+# and read straight from the solve directory when a system is assembled.
+DEDUP_QUANTS = ['diag', 'lower', 'lowerAddr', 'upperAddr',
+                'interfaceRow', 'interfaceCol', 'interfaceLower']
 
 
 def _parse_block(buf, dtype):
@@ -92,6 +93,9 @@ def discover(root):
 
     Layout: <root>/<timestep>/<field>-Absol/<solve>/<files>, with an extra
     nesting level (e.g. <timestep>/<region>/<field>-Absol/...) also handled.
+    The '-Absol' marker is stripped from the field, so `field` is the bare field
+    name ('p_rgh') for a single region or 'region.field' ('liquid.p_rgh') when
+    decomposed by region.
     """
     out = {}
     for tdir in glob(f'{root}/*'):
@@ -103,7 +107,10 @@ def discover(root):
             for fdir in glob(tdir + '/*' * depth):
                 if not os.path.isdir(fdir):
                     continue
-                field = '.'.join(fdir.split('/')[-depth:])
+                comps = fdir.split('/')[-depth:]
+                if comps[-1].endswith('-Absol'):
+                    comps[-1] = comps[-1][:-len('-Absol')]
+                field = '.'.join(comps)
                 for sdir in glob(f'{fdir}/*'):
                     try:
                         solve = int(sdir.rsplit('/', 1)[-1])
@@ -151,122 +158,211 @@ def build_orig(specs, region, sizes, offs, nGlobal):
     return orig
 
 
-if __name__ == '__main__':
+def desymmetrize(A):
+    """Halve the off-diagonal storage of a symmetric matrix: keep the diagonal
+    and the doubled strict-upper triangle, so the true matrix is recovered as
+    0.5*(A + A.T). This is the form written to the .mat files."""
+    M = A.tocoo()
+    dm = M.row == M.col
+    um = M.row < M.col
+    return sp.coo_array(
+        (np.concatenate([M.data[dm], 2.0 * M.data[um]]),
+         (np.concatenate([M.row[dm], M.row[um]]),
+          np.concatenate([M.col[dm], M.col[um]]))),
+        shape=M.shape,
+    )
 
-    folder = sys.argv[1].rstrip('/')
-    specs = subdomains(folder)
-    maps = {}
-    for root, _ in specs:
-        maps.setdefault(root, discover(root))
-    allkeys = sorted(set().union(*(set(maps[r]) for r, _ in specs)))
 
-    state = defaultdict(dict)    # subdomain index -> {quantity: array}
-    counter = defaultdict(int)   # field -> .mat index
-    orig_cache = {}              # region -> permutation (globalIndex order -> original cell)
+class LinearSystem:
+    """One assembled global linear system A x = b. `A` is the symmetric matrix
+    (CSR, the true matrix -- not the de-symmetrized storage form); `b`, `sol` and
+    `init` are the right-hand side, dumped solution and initial guess; `info` is
+    the solver info dict. For a decomposed run the per-processor pieces are
+    stitched into a single monolithic system in the original (undecomposed) cell
+    ordering, so it matches a serial run element-wise."""
 
-    mrr = 0.0
-    ml2 = 0.0
+    __slots__ = ('field', 'timestep', 'solve', 'A', 'b', 'sol', 'init', 'info')
 
-    for n, key in enumerate(allkeys):
+    def __init__(self, field, timestep, solve, A, b, sol, init, info):
+        self.field, self.timestep, self.solve = field, timestep, solve
+        self.A, self.b, self.sol, self.init, self.info = A, b, sol, init, info
+
+    @property
+    def niter(self):
+        return self.info.get('nIterations', 0)
+
+    def __repr__(self):
+        return (f'<LinearSystem {self.field} t={self.timestep} '
+                f'solve={self.solve} n={self.A.shape[0]}>')
+
+
+class LinearSystems:
+    """Iterate the linear systems dumped under a case directory, assembling each
+    into a monolithic global LinearSystem. Iteration reads from disk but writes
+    nothing (use desymmetrize + scipy.io.savemat to persist a system).
+
+    By default systems are yielded in the order they were solved: by timestep,
+    then by the per-field dump counter. `fields` restricts to the named field(s)
+    -- a single name or an iterable, using the names `discover` produces: the
+    bare field ('p_rgh') for a single region, or 'region.field' ('liquid.p_rgh')
+    when decomposed by region. `final_only` keeps only the solves run to
+    convergence, i.e. with relativeTolerance == 0."""
+
+    def __init__(self, folder, fields=None, final_only=False):
+        self.folder = folder.rstrip('/')
+        if fields is None:
+            self.fields = None
+        elif isinstance(fields, str):
+            self.fields = {fields}
+        else:
+            self.fields = set(fields)
+        self.final_only = final_only
+        self.specs = subdomains(self.folder)
+        self.maps = {}
+        for root, _ in self.specs:
+            self.maps.setdefault(root, discover(root))
+
+    def _ordered_keys(self):
+        """Every dumped solve key in solve order (by timestep, then per-field dump
+        counter, then field name), restricted to `fields`. This is the full
+        carry-forward sequence; `final_only` and completeness are applied later in
+        _walk, because a skipped solve still advances the deduplication carry-
+        forward and so must stay in the sequence."""
+        keys = set().union(*(set(self.maps[r]) for r, _ in self.specs))
+        if self.fields is not None:
+            keys = {k for k in keys if k[0] in self.fields}
+        return sorted(keys, key=lambda k: (k[1], k[2], k[0]))
+
+    def _walk(self):
+        """Walk every solve in order, advancing the per-(subdomain, field)
+        deduplication carry-forward, and yield (key, info, blocks) for each solve
+        that will be emitted: complete across subdomains, addressing already seen,
+        and -- when final_only -- solved to convergence. A skipped solve still
+        advances the carry-forward but is not yielded and is never assembled, so
+        keys(), len() and __iter__ all agree and none of them pay assembly cost
+        for a skipped system. `info` is read here only when final_only needs it
+        (otherwise lazily in _assemble). Each field is its own dedup chain, hence
+        the (subdomain, field) state key: interleaved fields must not borrow one
+        another's most-recent values."""
+        state = defaultdict(dict)
+        for key in self._ordered_keys():
+            field = key[0]
+            blocks, complete = [], True
+            for si, (root, block) in enumerate(self.specs):
+                sd = self.maps[root].get(key)
+                if sd is None or not os.path.isfile(f'{sd}/info'):
+                    complete = False
+                    break
+                st = state[(si, field)]
+                for q in DEDUP_QUANTS:
+                    path = f'{sd}/{q}'
+                    if os.path.isfile(path):
+                        st[q] = load(path, np.uint32 if q in INT_QUANTS else np.float64, block)
+                blocks.append((dict(st), sd, block))
+            if not complete:
+                continue
+            if any('lowerAddr' not in st for st, _, _ in blocks):
+                continue   # addressing not dumped yet (retain the run's first dump)
+            info = None
+            if self.final_only:
+                info = read_info(f'{blocks[0][1]}/info')
+                if info.get('relativeTolerance') != 0.0:
+                    continue   # skipped: carry-forward advanced, system not assembled
+            yield key, info, blocks
+
+    def keys(self):
+        """The (field, timestep, solve) keys that iteration yields, in solve order
+        -- `fields` and `final_only` applied, and incomplete / not-yet-addressed
+        solves excluded. len(self) and iteration agree with this exactly."""
+        return [key for key, _, _ in self._walk()]
+
+    def __len__(self):
+        return sum(1 for _ in self._walk())
+
+    def __iter__(self):
+        orig_cache = {}
+        for key, info, blocks in self._walk():
+            yield self._assemble(key, info, blocks, orig_cache)
+
+    def _assemble(self, key, info, blocks, orig_cache):
+        """Build the monolithic global system for one (yielded) solve from the
+        carried-forward matrix data in `blocks` plus this solve's b/sol/init."""
         field, timestep, solve = key
+        if info is None:
+            info = read_info(f'{blocks[0][1]}/info')
 
-        # --- read every subdomain block, carrying forward absent (addressing) data
-        blocks = []
-        sds = []
-        complete = True
-        for si, (root, block) in enumerate(specs):
-            sd = maps[root].get(key)
-            if sd is None or not os.path.isfile(f'{sd}/info'):
-                complete = False
-                break
-            st = state[si]
-            for q in LOAD_QUANTS:
-                path = f'{sd}/{q}'
-                if os.path.isfile(path):
-                    st[q] = load(path, np.uint32 if q in INT_QUANTS else np.float64, block)
-            info = read_info(f'{sd}/info')
-            sol_b = load(f'{sd}/sol', np.float64, block)
-            try:
-                init_b = load(f'{sd}/init', np.float64, block)
-            except (ValueError, OSError):
-                init_b = None
-            blocks.append((info, dict(st), sol_b, init_b))
-            sds.append(sd)
-        if not complete:
-            continue
-        if any('lowerAddr' not in st for _, st, _, _ in blocks):
-            print(f"\nskip {key}: addressing not seen yet (retain the run's first dump)")
-            continue
-
-        # --- per-subdomain offsets in the decomposed (globalIndex) order, which
-        #     is how the dumped global addressing is numbered
-        sizes = [st['diag'].shape[0] for _, st, _, _ in blocks]
+        # --- per-subdomain offsets in the decomposed (globalIndex) order
+        sizes = [st['diag'].shape[0] for st, _, _ in blocks]
         offs = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
         nGlobal = int(offs[-1])
-        niter = blocks[0][0].get('nIterations', 0)
 
-        # --- map that order back to the original undecomposed cell numbering via
-        #     cellProcAddressing (cached per region; identity when not decomposed),
-        #     so the output matches a serial run element-wise
-        region = tuple(os.path.relpath(sds[0], specs[0][0]).split('/')[1:-2])
+        # --- map that order back to the original undecomposed numbering via
+        #     cellProcAddressing (cached per region; identity when not decomposed)
+        region = tuple(os.path.relpath(blocks[0][1], self.specs[0][0]).split('/')[1:-2])
         if region not in orig_cache:
-            orig_cache[region] = build_orig(specs, region, sizes, offs, nGlobal)
+            orig_cache[region] = build_orig(self.specs, region, sizes, offs, nGlobal)
         orig = orig_cache[region]
         if orig is None:
             orig = np.arange(nGlobal, dtype=np.int64)
 
-        # --- assemble the monolithic global symmetric matrix M (original ordering)
+        # --- assemble the monolithic global symmetric matrix (original ordering),
+        #     reading this solve's RHS / solution / initial guess straight from disk
         rows, cols, vals = [], [], []
         bvec = np.zeros(nGlobal)
         solvec = np.zeros(nGlobal)
         initvec = np.zeros(nGlobal)
-        for si, (info, st, sol_b, init_b) in enumerate(blocks):
-            go = orig[offs[si]:offs[si + 1]]                             # this block's original cell ids
+        for (st, sd, block), lo, hi in zip(blocks, offs[:-1], offs[1:]):
+            go = orig[lo:hi]                                             # this block's original cell ids
             rows += [go, orig[st['upperAddr']], orig[st['lowerAddr']]]   # diagonal + internal
             cols += [go, orig[st['lowerAddr']], orig[st['upperAddr']]]
             vals += [st['diag'], st['lower'], st['lower']]
-            ir = st.get('interfaceRow')                                      # interface couplings
+            ir = st.get('interfaceRow')                                  # interface couplings
             if ir is not None and ir.size:
                 rows.append(orig[ir]); cols.append(orig[st['interfaceCol']]); vals.append(st['interfaceLower'])
-            bvec[go] = st['b']
-            solvec[go] = sol_b
+            bvec[go] = load(f'{sd}/b', np.float64, block)
+            solvec[go] = load(f'{sd}/sol', np.float64, block)
+            try:
+                init_b = load(f'{sd}/init', np.float64, block)
+            except (ValueError, OSError):
+                init_b = None
             if init_b is not None and init_b.size:
                 initvec[go] = init_b
 
-        M = sp.coo_array(
+        A = sp.coo_array(
             (np.concatenate(vals).astype(np.float64),
              (np.concatenate(rows).astype(np.int64),
               np.concatenate(cols).astype(np.int64))),
             shape=(nGlobal, nGlobal),
-        ).tocsr().tocoo()   # tocsr() sums any coincident entries
+        ).tocsr()   # tocsr() sums any coincident entries; this is the true symmetric matrix
+        return LinearSystem(field, timestep, solve, A, bvec, solvec, initvec, info)
 
-        # --- de-symmetrization (storage only): keep the diagonal and the
-        #     doubled strict upper triangle; the true matrix is 0.5*(A + A.T).
-        dm = M.row == M.col
-        um = M.row < M.col
-        A = sp.coo_array(
-            (np.concatenate([M.data[dm], 2.0 * M.data[um]]),
-             (np.concatenate([M.row[dm], M.row[um]]),
-              np.concatenate([M.col[dm], M.col[um]]))),
-            shape=(nGlobal, nGlobal),
-        )
 
-        outdir = f'{folder}/{field}-systems'
+if __name__ == '__main__':
+
+    folder = sys.argv[1].rstrip('/')
+    systems = LinearSystems(folder, fields='p', final_only=True)
+    total = len(systems.keys())
+
+    counter = defaultdict(int)   # field -> .mat index
+    mrr = 0.0
+    ml2 = 0.0
+
+    for n, system in enumerate(systems):
+        outdir = f'{folder}/{system.field}-systems'
         os.makedirs(outdir, exist_ok=True)
-        counter[field] += 1
+        counter[system.field] += 1
         sio.savemat(
-            os.path.join(outdir, f'{counter[field]}.mat'),
-            {'A': A, 'b': bvec, 'sol': solvec, 'init': initvec, 'niter': niter},
+            os.path.join(outdir, f'{counter[system.field]}.mat'),
+            {'A': desymmetrize(system.A), 'b': system.b,
+             'sol': system.sol, 'init': system.init, 'niter': system.niter},
         )
 
-        print('processed', n + 1, '/', len(allkeys), 'systems', end='\t')
-        symA = 0.5 * (A + A.T)
-        effTol = max(blocks[0][0]['relativeTolerance'] * openfoam_residual(symA, bvec, initvec),
-                     blocks[0][0]['tolerance'])
-
-        mrr = max(mrr, openfoam_residual(symA, bvec, solvec) / effTol)
+        print('processed', n + 1, '/', total, 'systems', end='\t')
+        effTol = max(system.info['relativeTolerance'] * openfoam_residual(system.A, system.b, system.init),
+                     system.info['tolerance'])
+        mrr = max(mrr, openfoam_residual(system.A, system.b, system.sol) / effTol)
         print('max residual:reported:', round(mrr, 2), end='\t')
-        ml2 = max(ml2, np.linalg.norm(symA @ solvec - bvec) / np.linalg.norm(bvec))
+        ml2 = max(ml2, np.linalg.norm(system.A @ system.sol - system.b) / np.linalg.norm(system.b))
         print('max l2 error:', ml2, end='\r')
 
     print()
