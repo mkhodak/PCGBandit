@@ -93,9 +93,9 @@ def discover(root):
 
     Layout: <root>/<timestep>/<field>-Absol/<solve>/<files>, with an extra
     nesting level (e.g. <timestep>/<region>/<field>-Absol/...) also handled.
-    The '-Absol' marker is stripped from the field, so `field` is the bare field
-    name ('p_rgh') for a single region or 'region.field' ('liquid.p_rgh') when
-    decomposed by region.
+    `field` is the path of the dump folder under the timestep with the '-Absol'
+    marker dropped: the bare field name ('p_rgh') for a single region, or
+    'region/field' ('liquid/p_rgh') when decomposed by region.
     """
     out = {}
     for tdir in glob(f'{root}/*'):
@@ -110,7 +110,7 @@ def discover(root):
                 comps = fdir.split('/')[-depth:]
                 if comps[-1].endswith('-Absol'):
                     comps[-1] = comps[-1][:-len('-Absol')]
-                field = '.'.join(comps)
+                field = '/'.join(comps)
                 for sdir in glob(f'{fdir}/*'):
                     try:
                         solve = int(sdir.rsplit('/', 1)[-1])
@@ -203,10 +203,10 @@ class LinearSystems:
 
     By default systems are yielded in the order they were solved: by timestep,
     then by the per-field dump counter. `fields` restricts to the named field(s)
-    -- a single name or an iterable, using the names `discover` produces: the
-    bare field ('p_rgh') for a single region, or 'region.field' ('liquid.p_rgh')
-    when decomposed by region. `final_only` keeps only the solves run to
-    convergence, i.e. with relativeTolerance == 0."""
+    -- a single name or an iterable, named as `discover` keys them: the bare
+    field ('p_rgh') for a single region, or the dump-folder path 'region/field'
+    ('liquid/p_rgh') when decomposed by region. `final_only` keeps only the solves
+    run to convergence, i.e. with relativeTolerance == 0."""
 
     def __init__(self, folder, fields=None, final_only=False):
         self.folder = folder.rstrip('/')
@@ -348,7 +348,7 @@ if __name__ == '__main__':
     ml2 = 0.0
 
     for n, system in enumerate(systems):
-        outdir = f'{folder}/{system.field}-systems'
+        outdir = f'{folder}/Absol/{system.field}'
         os.makedirs(outdir, exist_ok=True)
         counter[system.field] += 1
         sio.savemat(
