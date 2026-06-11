@@ -205,10 +205,12 @@ class LinearSystems:
     then by the per-field dump counter. `fields` restricts to the named field(s)
     -- a single name or an iterable, named as `discover` keys them: the bare
     field ('p_rgh') for a single region, or the dump-folder path 'region/field'
-    ('liquid/p_rgh') when decomposed by region. `final_only` keeps only the solves
-    run to convergence, i.e. with relativeTolerance == 0."""
+    ('liquid/p_rgh') when decomposed by region. `corrector` selects which of a
+    timestep's repeated solves to keep: None (default) yields every solve, while
+    an integer keeps one solve per (field, timestep), chosen by position among
+    that timestep's correctors -- 0 the first, -1 the last."""
 
-    def __init__(self, folder, fields=None, final_only=False):
+    def __init__(self, folder, fields=None, corrector=None):
         self.folder = folder.rstrip('/')
         if fields is None:
             self.fields = None
@@ -216,7 +218,9 @@ class LinearSystems:
             self.fields = {fields}
         else:
             self.fields = set(fields)
-        self.final_only = final_only
+        if not corrector is None and not isinstance(corrector, int):
+            raise ValueError("corrector must be None or an int index (e.g. 0 or -1)")
+        self.corrector = corrector
         self.specs = subdomains(self.folder)
         self.maps = {}
         for root, _ in self.specs:
@@ -225,27 +229,42 @@ class LinearSystems:
     def _ordered_keys(self):
         """Every dumped solve key in solve order (by timestep, then per-field dump
         counter, then field name), restricted to `fields`. This is the full
-        carry-forward sequence; `final_only` and completeness are applied later in
-        _walk, because a skipped solve still advances the deduplication carry-
-        forward and so must stay in the sequence."""
+        carry-forward sequence; corrector selection and completeness are applied
+        later in _walk, because a skipped solve still advances the deduplication
+        carry-forward and so must stay in the sequence."""
         keys = set().union(*(set(self.maps[r]) for r, _ in self.specs))
         if self.fields is not None:
             keys = {k for k in keys if k[0] in self.fields}
         return sorted(keys, key=lambda k: (k[1], k[2], k[0]))
 
+    def _selected(self, ordered):
+        """The keys to emit under `corrector`: all of them for None, else one
+        solve per (field, timestep) picked by position among that timestep's
+        correctors (`ordered` is ascending in dump counter within each group, so
+        index 0 is the first corrector and -1 the last; an out-of-range index
+        drops that timestep)."""
+        if self.corrector is None:
+            return None
+        groups = defaultdict(list)
+        for key in ordered:
+            groups[key[:2]].append(key)          # group by (field, timestep)
+        return {grp[self.corrector] for grp in groups.values()
+                if -len(grp) <= self.corrector < len(grp)}
+
     def _walk(self):
         """Walk every solve in order, advancing the per-(subdomain, field)
-        deduplication carry-forward, and yield (key, info, blocks) for each solve
-        that will be emitted: complete across subdomains, addressing already seen,
-        and -- when final_only -- solved to convergence. A skipped solve still
-        advances the carry-forward but is not yielded and is never assembled, so
-        keys(), len() and __iter__ all agree and none of them pay assembly cost
-        for a skipped system. `info` is read here only when final_only needs it
-        (otherwise lazily in _assemble). Each field is its own dedup chain, hence
-        the (subdomain, field) state key: interleaved fields must not borrow one
-        another's most-recent values."""
+        deduplication carry-forward, and yield (key, blocks) for each solve to be
+        emitted: complete across subdomains, addressing already seen, and -- when
+        `corrector` is not None -- the selected corrector of its (field,
+        timestep). A skipped solve still advances the carry-forward but is not
+        yielded and is never assembled, so keys(), len() and __iter__ agree and
+        none of them pay assembly cost for a skipped system. Each field is its own
+        dedup chain, hence the (subdomain, field) state key: interleaved fields
+        must not borrow one another's most-recent values."""
+        ordered = self._ordered_keys()
+        selected = self._selected(ordered)
         state = defaultdict(dict)
-        for key in self._ordered_keys():
+        for key in ordered:
             field = key[0]
             blocks, complete = [], True
             for si, (root, block) in enumerate(self.specs):
@@ -263,33 +282,29 @@ class LinearSystems:
                 continue
             if any('lowerAddr' not in st for st, _, _ in blocks):
                 continue   # addressing not dumped yet (retain the run's first dump)
-            info = None
-            if self.final_only:
-                info = read_info(f'{blocks[0][1]}/info')
-                if info.get('relativeTolerance') != 0.0:
-                    continue   # skipped: carry-forward advanced, system not assembled
-            yield key, info, blocks
+            if selected is not None and key not in selected:
+                continue   # not the requested corrector: carry-forward advanced, not yielded
+            yield key, blocks
 
     def keys(self):
         """The (field, timestep, solve) keys that iteration yields, in solve order
-        -- `fields` and `final_only` applied, and incomplete / not-yet-addressed
+        -- `fields` and `corrector` applied, and incomplete / not-yet-addressed
         solves excluded. len(self) and iteration agree with this exactly."""
-        return [key for key, _, _ in self._walk()]
+        return [key for key, _ in self._walk()]
 
     def __len__(self):
         return sum(1 for _ in self._walk())
 
     def __iter__(self):
         orig_cache = {}
-        for key, info, blocks in self._walk():
-            yield self._assemble(key, info, blocks, orig_cache)
+        for key, blocks in self._walk():
+            yield self._assemble(key, blocks, orig_cache)
 
-    def _assemble(self, key, info, blocks, orig_cache):
+    def _assemble(self, key, blocks, orig_cache):
         """Build the monolithic global system for one (yielded) solve from the
         carried-forward matrix data in `blocks` plus this solve's b/sol/init."""
         field, timestep, solve = key
-        if info is None:
-            info = read_info(f'{blocks[0][1]}/info')
+        info = read_info(f'{blocks[0][1]}/info')
 
         # --- per-subdomain offsets in the decomposed (globalIndex) order
         sizes = [st['diag'].shape[0] for st, _, _ in blocks]
@@ -340,7 +355,7 @@ class LinearSystems:
 if __name__ == '__main__':
 
     folder = sys.argv[1].rstrip('/')
-    systems = LinearSystems(folder, fields='p', final_only=True)
+    systems = LinearSystems(folder, fields='p', corrector=-1)
     total = len(systems.keys())
 
     counter = defaultdict(int)   # field -> .mat index
